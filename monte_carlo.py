@@ -10,7 +10,7 @@ st.markdown("""
 **Objective:** Probabilistic valuation simulation based on a 2-Stage DCF Model.
 This engine assesses the impact of assumption volatility (WACC, Growth) on the intrinsic share value.
 """)
-
+#zmniana test
 # --- SECTION 1: SIDEBAR INPUTS & CHEAT SHEET ---
 with st.sidebar:
     st.header("1. Key Assumptions (Base Case)")
