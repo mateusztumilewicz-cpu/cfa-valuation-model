@@ -10,7 +10,7 @@ st.title(" Macro Stress-Test: WIBOR Transmission Mechanism")
 
 # --- METHODOLOGY NOTE ---
 st.markdown(r"""
-### 📝 Methodology Note
+###  Methodology Note
 To isolate the impact of interest rate shocks (**WIBOR**) on the company's valuation, 
 this model applies the **ceteris paribus** principle. 
 

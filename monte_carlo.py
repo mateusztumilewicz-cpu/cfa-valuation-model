@@ -16,7 +16,7 @@ with st.sidebar:
     st.header("1. Key Assumptions (Base Case)")
     
     # --- ANALYST CHEAT SHEET ---
-    with st.expander("📘 Analyst Cheat Sheet: Formula Guide"):
+    with st.expander(" Analyst Cheat Sheet: Formula Guide"):
         st.markdown(r"""
         **1. Free Cash Flow (FCF Year 0):**
         $$FCF = EBIT(1-t) + D\&A - CAPEX - \Delta NWC$$
