@@ -93,7 +93,7 @@ def run_simulation():
     return share_price
 
 # --- SECTION 3: RESULTS DASHBOARD ---
-if st.button("🔥 Run Monte Carlo Simulation"):
+if st.button(" Run Monte Carlo Simulation"):
     
     with st.spinner('Simulating 10,000 market scenarios...'):
         results = run_simulation()
