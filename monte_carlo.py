@@ -5,7 +5,7 @@ import seaborn as sns
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title=" Valuation Model", layout="wide")
-st.title(": Monte Carlo Valuation Engine")
+st.title("Monte Carlo Valuation Engine")
 st.markdown("""
 **Objective:** Probabilistic valuation simulation based on a 2-Stage DCF Model.
 This engine assesses the impact of assumption volatility (WACC, Growth) on the intrinsic share value.
