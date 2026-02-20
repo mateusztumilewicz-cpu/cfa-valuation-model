@@ -8,7 +8,7 @@ st.set_page_config(page_title="Transparent Monte Carlo DCF", layout="wide")
 
 multi_class_tickers = ['GOOG', 'GOOGL', 'META', 'BRK.B', 'BRK-B', 'BRK.A', 'UAA', 'UA', 'ZILL', 'ZG']
 
-# --- FUNKCJA POBIERANIA DANYCH (BEZ UKRYTYCH ZAŁOŻEŃ, Z PAMIĘCIĄ CACHE) ---
+# --- FUNKCJA POBIERANIA DANYCH ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_company_data(ticker_str):
     if not ticker_str:
@@ -17,23 +17,28 @@ def get_company_data(ticker_str):
         stock = yf.Ticker(ticker_str)
         info = stock.info
         
-        # Pobieranie danych (jeśli brak, wpisujemy 0.0 zamiast wymyślać liczby)
         fcf = info.get('freeCashflow', 0) / 1e9 if info.get('freeCashflow') else 0.0
-        total_debt = info.get('totalDebt', 0) if info.get('totalDebt') else 0.0
+        
+        # Pobieramy zarówno dług całkowity (do wag WACC), jak i gotówkę (do długu netto)
+        total_debt_raw = info.get('totalDebt', 0) if info.get('totalDebt') else 0.0
         total_cash = info.get('totalCash', 0) if info.get('totalCash') else 0.0
-        net_debt = (total_debt - total_cash) / 1e9
+        
+        total_debt = total_debt_raw / 1e9
+        net_debt = (total_debt_raw - total_cash) / 1e9
         
         shares = info.get('sharesOutstanding', 0) / 1e6 if info.get('sharesOutstanding') else 0.0
         growth_est = info.get('earningsGrowth', 0.0) if info.get('earningsGrowth') is not None else 0.0
         beta = info.get('beta', 0.0) if info.get('beta') else 0.0
+        market_price = info.get('currentPrice', 0.0)
         
         return {
             "name": info.get('longName', ticker_str),
             "fcf": fcf,
-            "net_debt": net_debt,
+            "total_debt": total_debt,  # Zapisujemy dług całkowity dla wag WACC
+            "net_debt": net_debt,      # Dług netto do ostatecznej wyceny
             "shares": shares,
             "beta": beta,
-            "market_price": info.get('currentPrice', 0.0),
+            "market_price": market_price,
             "growth_est": growth_est
         }
     except Exception as e:
@@ -68,7 +73,6 @@ if input_mode == "Pobierz automatycznie z Yahoo Finance":
             data = get_company_data(ticker_input)
             
         if data:
-            # Detekcja brakujących danych (Transparentność!)
             missing = []
             if data['shares'] == 0.0: missing.append("Liczba akcji")
             if data['beta'] == 0.0: missing.append("Beta")
@@ -82,7 +86,7 @@ if input_mode == "Pobierz automatycznie z Yahoo Finance":
 else:
     st.info("💡 Tryb ręczny: Pola wejściowe zostały odblokowane. Wpisz własne dane z raportów spółki.")
     data = {
-        "name": "Moja Spółka (Wycena ręczna)", "fcf": 0.0, "net_debt": 0.0, 
+        "name": "Moja Spółka (Wycena ręczna)", "fcf": 0.0, "total_debt": 0.0, "net_debt": 0.0, 
         "shares": 0.0, "beta": 0.0, "market_price": 0.0, "growth_est": 0.0
     }
 
@@ -116,12 +120,25 @@ if data:
     with c4:
         val_cost_debt = st.number_input("Koszt długu (Rd) po opodatkowaniu [%]", value=4.50) / 100
         
-    st.markdown("**Struktura kapitału firmy (Wagi muszą sumować się do 100%):**")
+    # --- AUTOMATYCZNE WYLICZANIE WAG KAPITAŁU ---
+    # Market Cap (w miliardach) = (Akcje w milionach * Cena) / 1000
+    market_cap_bn = (val_shares * data['market_price']) / 1000 if data['market_price'] else 0.0
+    total_capital = market_cap_bn + data['total_debt']
+    
+    if total_capital > 0:
+        auto_eq_weight = (market_cap_bn / total_capital) * 100
+        auto_d_weight = (data['total_debt'] / total_capital) * 100
+    else:
+        # Fallback jeśli brak danych rynkowych
+        auto_eq_weight = 90.0
+        auto_d_weight = 10.0
+
+    st.markdown("**Struktura kapitału firmy (Zasugerowana na bazie Market Cap i całkowitego długu):**")
     cw1, cw2 = st.columns(2)
     with cw1:
-        weight_equity = st.number_input("Waga Kapitału Własnego (Equity) [%]", value=90.0) / 100
+        weight_equity = st.number_input("Waga Kapitału Własnego (Equity) [%]", value=float(auto_eq_weight)) / 100
     with cw2:
-        weight_debt = st.number_input("Waga Długu (Debt) [%]", value=10.0) / 100
+        weight_debt = st.number_input("Waga Długu (Debt) [%]", value=float(auto_d_weight)) / 100
 
     if abs((weight_equity + weight_debt) - 1.0) > 0.001:
         st.error("🚨 Suma wag kapitału i długu musi wynosić równo 100%!")
@@ -129,7 +146,6 @@ if data:
     re = val_rf + (val_beta * val_erp)
     sug_wacc = (re * weight_equity) + (val_cost_debt * weight_debt)
     
-    # Jasne wytłumaczenie różnicy między Re a WACC
     st.info(f"**Jak to policzyliśmy?**\n"
             f"1. Koszt Kapitału Własnego (Re) wg modelu CAPM wynosi: **{(re*100):.2f}%**\n"
             f"2. Uśredniamy to z kosztem i wagą długu, co daje ostateczny WACC do modelu: **{(sug_wacc*100):.2f}%**")
@@ -179,7 +195,6 @@ if data:
                     pv_projection = 0
                     current_fcf = val_fcf
                     
-                    # Logika 3 Faz (Faza 1: 1-5, Faza 2: 6-10 (Fade))
                     for year in range(1, 11):
                         if year <= 5:
                             growth = s_g
@@ -191,7 +206,6 @@ if data:
                         current_fcf *= (1 + growth)
                         pv_projection += current_fcf / ((1 + s_wacc)**year)
                     
-                    # Faza 3: Terminal Value
                     if tv_method == "Wzrost wieczysty (Gordon Growth)":
                         tv = (current_fcf * (1 + g_term)) / (max(s_wacc - g_term, 0.005))
                     else:
