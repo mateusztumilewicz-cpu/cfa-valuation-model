@@ -4,7 +4,7 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-st.set_page_config(page_title="Transparent Monte Carlo DCF", layout="wide")
+st.set_page_config(page_title=" Monte Carlo DCF", layout="wide")
 
 multi_class_tickers = ['GOOG', 'GOOGL', 'META', 'BRK.B', 'BRK-B', 'BRK.A', 'UAA', 'UA', 'ZILL', 'ZG']
 
@@ -46,7 +46,7 @@ def get_company_data(ticker_str):
         return None
 
 # --- GŁÓWNY INTERFEJS ---
-st.title("💎 Transparent DCF Valuation Tool")
+st.title("DCF Valuation Tool")
 
 with st.expander("📖 Jak działa ten model DCF? (Mechanika 3 faz)"):
     st.markdown("""
