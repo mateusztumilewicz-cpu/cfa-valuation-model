@@ -1,159 +1,189 @@
 import streamlit as st
 import numpy as np
+import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Mastercard Valuation", layout="wide")
-st.title("💎 Advanced Monte Carlo Valuation (3-Stage DCF)")
-st.markdown("""
-**Target:** Mastercard (MA) style valuation.
-Includes **3-Stage Growth Fade** (High -> Transition -> Stable) and **Dual Terminal Value Methods**.
-""")
+st.set_page_config(page_title="Transparent Monte Carlo DCF", layout="wide")
 
-# --- SECTION 1: SIDEBAR INPUTS ---
-with st.sidebar:
-    st.header("1. Financials (Base Case - USD)")
-    
-    # Dane szacunkowe dla Mastercard (w mld USD, akcje w mln)
-    fcf_year_0 = st.number_input("FCF (Year 0) [$ bn]", value=11.5, help="Free Cash Flow (TTM)")
-    net_debt = st.number_input("Net Debt [$ bn]", value=5.0, help="Total Debt - Cash. MA often has low/negative net debt.")
-    shares = st.number_input("Shares Outstanding [m]", value=930.0, help="Diluted Shares")
-    
-    st.markdown("---")
-    st.header("2. Growth Stages")
-    
-    # STAGE 1
-    st.subheader("Stage 1: High Growth (Y1-Y5)")
-    g_high_mean = st.slider("Avg. Growth (CAGR) [%]", 0.0, 25.0, 14.0) / 100
-    g_high_std = st.number_input("St. Dev Stage 1 (+/- %)", value=2.0) / 100
-    
-    # STAGE 2 (Transition is Automatic)
-    st.info("ℹ️ Stage 2 (Y6-Y10) will linearly fade from Stage 1 Growth down to Terminal Growth.")
+multi_class_tickers = ['GOOG', 'GOOGL', 'META', 'BRK.B', 'BRK-B', 'BRK.A', 'UAA', 'UA', 'ZILL', 'ZG']
 
-    st.markdown("---")
-    st.header("3. Terminal Value & WACC")
-    
-    # WACC INPUTS
-    col_wacc1, col_wacc2 = st.columns(2)
-    with col_wacc1:
-        wacc_mean = st.number_input("Target WACC [%]", value=8.0, step=0.1) / 100
-    with col_wacc2:
-        wacc_std = st.number_input("WACC Volatility", value=0.8, step=0.1) / 100
+# --- FUNKCJA POBIERANIA DANYCH ---
+def get_company_data(ticker_str):
+    if not ticker_str:
+        return None
+    try:
+        stock = yf.Ticker(ticker_str)
+        info = stock.info
         
-    # TERMINAL METHOD SELECTION
-    tv_method = st.radio("Terminal Value Method", ["Gordon Growth (Perpetuity)", "Exit Multiple (EV/FCF)"])
-    
-    if tv_method == "Gordon Growth (Perpetuity)":
-        g_term_mean = st.number_input("Terminal Growth (g) [%]", value=2.5, step=0.1) / 100
-        g_term_std = st.number_input("Volatility g (+/-)", value=0.5, step=0.1) / 100
-    else:
-        # Exit Multiple Inputs
-        st.write("**Exit Multiple Assumptions (Year 10)**")
-        exit_mult_mean = st.number_input("Target EV/FCF Multiple [x]", value=20.0, step=0.5)
-        exit_mult_std = st.number_input("Multiple Volatility [x]", value=2.0, step=0.5)
+        fcf = info.get('freeCashflow', 0) / 1e9 if info.get('freeCashflow') else 0
+        total_debt = info.get('totalDebt', 0) if info.get('totalDebt') else 0
+        total_cash = info.get('totalCash', 0) if info.get('totalCash') else 0
+        net_debt = (total_debt - total_cash) / 1e9
+        
+        shares = info.get('sharesOutstanding', 0) / 1e6 if info.get('sharesOutstanding') else 100
+        
+        growth_est = info.get('earningsGrowth', 0.10) # 10% jako fallback gdy brak danych
+        beta = info.get('beta', 1.0) if info.get('beta') else 1.0
+        
+        return {
+            "name": info.get('longName', ticker_str),
+            "fcf": fcf,
+            "net_debt": net_debt,
+            "shares": shares,
+            "beta": beta,
+            "market_price": info.get('currentPrice'),
+            "growth_est": growth_est
+        }
+    except Exception as e:
+        st.error(f"Błąd podczas pobierania danych dla {ticker_str}: {e}")
+        return None
 
-    st.markdown("---")
-    simulations = st.select_slider("Iterations", options=[1000, 5000, 10000, 20000], value=5000)
+# --- GŁÓWNY INTERFEJS I EDUKACJA ---
+st.title("DCF Valuation Tool")
 
-# --- SECTION 2: CALCULATION ENGINE (3-STAGE) ---
-def run_advanced_simulation():
-    # 1. Randomize Inputs
-    wacc_sim = np.random.normal(wacc_mean, wacc_std, simulations)
-    
-    # Growth Vectors
-    g_stage1_sim = np.random.normal(g_high_mean, g_high_std, simulations)
-    
-    # Terminal Inputs based on Method
-    if tv_method == "Gordon Growth (Perpetuity)":
-        g_term_sim = np.random.normal(g_term_mean, g_term_std, simulations)
-    else:
-        # For Fade calculation, we still need a 'proxy' long-term growth 
-        # to fade towards, typically inflation (2-3%)
-        g_term_sim = np.full(simulations, 0.025) 
-        exit_mult_sim = np.random.normal(exit_mult_mean, exit_mult_std, simulations)
+with st.expander("📖 Jak działa ten model DCF? (Mechanika 3 faz)"):
+    st.markdown("""
+    Nasz model to klasyczny, 3-fazowy model oparty na wolnych przepływach pieniężnych (FCF):
+    1. **Faza 1 (Lata 1-5):** Dynamiczny wzrost. Przepływy rosną w tempie, które sam ustalisz na suwaku.
+    2. **Faza 2 (Lata 6-10):** Liniowe wygaszanie (Fade). Wzrost firmy płynnie spada z wysokiego poziomu (z Fazy 1) aż do stabilnego poziomu terminalnego w roku 10.
+    3. **Faza 3 (Wartość Terminalna - TV):** Wycena "reszty życia" firmy po 10 roku. Możesz użyć do tego wzrostu wieczystego (Gordon Growth Model) lub wyjścia przez wskaźnik mnożnikowy (Exit Multiple).
+    """)
 
-    # 2. PROJECTION LOOP (10 YEARS)
-    pv_projection = np.zeros(simulations)
-    current_fcf = np.full(simulations, fcf_year_0)
-    last_g = g_stage1_sim # Start with high growth
-    
-    # We will store Year 10 FCF for Terminal Calculation
-    fcf_year_10 = np.zeros(simulations)
+ticker_input = st.text_input("Wpisz Ticker spółki (np. GOOGL, AAPL, UBER):", value="").upper()
 
-    for year in range(1, 11):
-        if year <= 5:
-            # Stage 1: High Growth
-            growth_rate = g_stage1_sim
-        else:
-            # Stage 2: Linear Fade (Interpolation)
-            # Year 6 is 20% faded, Year 10 is 100% faded towards terminal
-            fade_factor = (year - 5) / 5.0 
-            growth_rate = g_stage1_sim * (1 - fade_factor) + g_term_sim * fade_factor
+if ticker_input:
+    with st.spinner('Pobieram dane z Yahoo Finance...'):
+        data = get_company_data(ticker_input)
+    
+    if data:
+        st.header(f"Analiza: {data['name']}")
+        
+        if ticker_input in multi_class_tickers:
+            st.warning(f"⚠️ **OSTRZEŻENIE:** {ticker_input} ma strukturę wieloklasową. Sprawdź i popraw łączną liczbę akcji poniżej!")
             
-        current_fcf = current_fcf * (1 + growth_rate)
-        discount_factor = (1 + wacc_sim) ** year
-        pv_projection += current_fcf / discount_factor
+        st.divider()
+        st.subheader("📝 KROK 1: Fundamentalne dane wejściowe")
         
-        if year == 10:
-            fcf_year_10 = current_fcf
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            val_fcf = st.number_input("FCF (Year 0) [$ bn]", value=float(data['fcf']))
+        with col2:
+            val_debt = st.number_input("Dług Netto [$ bn]", value=float(data['net_debt']))
+        with col3:
+            val_shares = st.number_input("Liczba akcji [m]", value=float(data['shares']))
 
-    # 3. TERMINAL VALUE CALCULATION
-    if tv_method == "Gordon Growth (Perpetuity)":
-        # Gordon Growth on Year 11 FCF
-        fcf_year_11 = fcf_year_10 * (1 + g_term_sim)
-        denominator = np.maximum(wacc_sim - g_term_sim, 0.005) # Safety buffer
-        tv = fcf_year_11 / denominator
-    else:
-        # Exit Multiple on Year 10 FCF
-        tv = fcf_year_10 * exit_mult_sim
+        st.divider()
         
-    # Discount TV back 10 years
-    pv_tv = tv / ((1 + wacc_sim) ** 10)
-    
-    # 4. VALUATION
-    enterprise_value = pv_projection + pv_tv
-    equity_value = enterprise_value - net_debt
-    share_price = np.maximum(equity_value *1000 / shares, 0)
-    
-    return share_price
+        # --- TRANSPARENTNY CAPM & WACC ---
+        st.subheader("⚖️ KROK 2: Kalkulacja WACC i CAPM (Pełna transparentność)")
+        st.info("Poniżej znajdują się założenia makroekonomiczne. Domyślne wartości to aktualne szacunki dla rynku USA, ale możesz je w pełni edytować.")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            val_rf = st.number_input("Stopa wolna od ryzyka (Rf) [%]", value=4.20, help="Np. 10-letnie obligacje USA") / 100
+        with c2:
+            val_erp = st.number_input("Premia rynkowa (ERP) [%]", value=5.50, help="Dodatkowy zwrot wymagany za ryzyko akcji") / 100
+        with c3:
+            val_beta = st.number_input("Beta (Zmienność spółki)", value=float(data['beta']))
+        with c4:
+            val_cost_debt = st.number_input("Koszt długu (Rd) po opodatkowaniu [%]", value=4.50) / 100
+            
+        # Obliczenia WACC na oczach użytkownika
+        re = val_rf + (val_beta * val_erp)
+        st.write(f"👉 **Koszt Kapitału Własnego (Re) z modelu CAPM wyniósł:** {(re*100):.2f}%")
+        
+        # Zakładamy domyślnie 90% Equity, 10% Debt dla ułatwienia (też można by to rozbić, ale WACC z suwakiem daje kontrolę)
+        sug_wacc = (re * 0.9) + (val_cost_debt * 0.1)
+        wacc_final = st.slider("Zaakceptuj lub dostosuj finalny WACC do modelu [%]", 4.0, 16.0, float(sug_wacc*100)) / 100
 
-# --- SECTION 3: DASHBOARD ---
-if st.button("🔥 Run 3-Stage Monte Carlo"):
-    
-    with st.spinner('Calculating 3-Stage DCF with Linear Growth Fade...'):
-        results = run_advanced_simulation()
+        st.divider()
+
+        # --- WZROST I WARTOŚĆ TERMINALNA (WYBÓR) ---
+        st.subheader("📈 KROK 3: Dynamika wzrostu i Wartość Terminalna")
         
-        mean_val = np.mean(results)
-        low_val = np.percentile(results, 5.0)   # 5% Conservative
-        high_val = np.percentile(results, 95.0) # 95% Optimistic
+        col_g, col_tv = st.columns(2)
+        with col_g:
+            safe_growth = max(0.0, min(data['growth_est'], 0.40))
+            g_high = st.slider("Wzrost FCF (Lata 1-5) [%]", 0.0, 40.0, float(safe_growth*100)) / 100
+            st.caption(f"💡 Sugerowany krótko-średnioterminowy wzrost wg Yahoo: **{data['growth_est']*100:.1f}%**")
+            
+        with col_tv:
+            tv_method = st.radio("Metoda wyliczenia Wartości Terminalnej (TV)", ["Wzrost wieczysty (Gordon Growth)", "Mnożnik wyjścia (Exit Multiple)"])
+            
+            if tv_method == "Wzrost wieczysty (Gordon Growth)":
+                g_term = st.number_input("Wzrost terminalny [%]", value=2.5, help="Zwykle na poziomie długoterminowej inflacji (2-3%)") / 100
+            else:
+                exit_mult = st.number_input("Mnożnik wyjścia (EV/FCF)", value=15.0, help="Za ile krotności wygenerowanej gotówki firma zostanie sprzedana w 10 roku.")
+
+        sims = st.select_slider("Liczba symulacji Monte Carlo", options=[1000, 5000, 10000], value=5000)
         
-        # --- METRICS ---
-        st.write(f"### Valuation Results ({tv_method})")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Conservative (5%)", f"${low_val:.2f}", delta="Buy Zone?")
-        c2.metric("Mean Intrinsic Value", f"${mean_val:.2f}")
-        c3.metric("Optimistic (95%)", f"${high_val:.2f}", delta="Sell Zone?")
-        
-        # --- VISUALIZATION ---
-        fig, ax = plt.subplots(figsize=(10, 5))
-        sns.histplot(results, bins=100, kde=True, color="#3498db", element="step", alpha=0.5, ax=ax)
-        
-        # Add Lines
-        ax.axvline(mean_val, color='red', linestyle='-', linewidth=2, label='Mean')
-        ax.axvline(low_val, color='green', linestyle='--', label='5% Conf.')
-        ax.axvline(high_val, color='green', linestyle='--', label='95% Conf.')
-        
-        ax.set_title(f"Mastercard Valuation Distribution (n={simulations})", fontsize=12)
-        ax.set_xlabel("Share Price [$]")
-        ax.legend()
-        st.pyplot(fig)
-        
-        # --- EXPLANATION ---
-        st.info(f"""
-        **Methodology Note:**
-        This model uses a **3-Stage approach**. 
-        1. **Years 1-5:** High growth based on your input ({g_high_mean*100:.1f}%).
-        2. **Years 6-10:** Growth smoothly **fades** linearly down to the terminal rate.
-        3. **Terminal:** Calculated using **{tv_method}**.
-        """)
+        st.divider()
+
+        # --- OBLICZENIA ---
+        if st.button("🚀 Uruchom Kalkulację DCF"):
+            with st.spinner('Trwają obliczenia...'):
+                results = []
+                for _ in range(sims):
+                    s_wacc = np.random.normal(wacc_final, 0.007)
+                    s_g = np.random.normal(g_high, 0.02)
+                    
+                    pv_projection = 0
+                    current_fcf = val_fcf
+                    
+                    for year in range(1, 11):
+                        if year <= 5:
+                            growth = s_g
+                        else:
+                            # Faza 2: Fade z s_g do 0 (jeśli Multiple) lub g_term (jeśli Gordon)
+                            target_g = g_term if tv_method == "Wzrost wieczysty (Gordon Growth)" else 0.02
+                            fade_factor = (year - 5) / 5
+                            growth = s_g * (1 - fade_factor) + target_g * fade_factor
+                        
+                        current_fcf *= (1 + growth)
+                        pv_projection += current_fcf / ((1 + s_wacc)**year)
+                    
+                    # Faza 3: Terminal Value wg wybranej metody
+                    if tv_method == "Wzrost wieczysty (Gordon Growth)":
+                        tv = (current_fcf * (1 + g_term)) / (max(s_wacc - g_term, 0.005))
+                    else:
+                        # Mnożnik dodaje też trochę losowości, żeby Monte Carlo działało na multiple (np. +/- 1.0)
+                        s_mult = np.random.normal(exit_mult, 1.0)
+                        tv = current_fcf * s_mult
+                        
+                    pv_tv = tv / ((1 + s_wacc)**10)
+                    
+                    enterprise_value = pv_projection + pv_tv
+                    equity_value = enterprise_value - val_debt
+                    share_price = max(equity_value * 1000 / val_shares, 0)
+                    results.append(share_price)
+
+                # --- WYNIKI ---
+                mean_res = np.mean(results)
+                p5 = np.percentile(results, 5)
+                p95 = np.percentile(results, 95)
+                
+                st.success("Obliczenia zakończone!")
+                res1, res2, res3 = st.columns(3)
+                res1.metric("Pesymistycznie (5%)", f"${p5:.2f}")
+                
+                if data['market_price']:
+                    delta_pct = f"{(mean_res/data['market_price']-1)*100:.1f}% vs Market"
+                else:
+                    delta_pct = "Brak ceny rynkowej"
+                    
+                res2.metric("Fair Value (Średnia)", f"${mean_res:.2f}", delta=delta_pct)
+                res3.metric("Optymistycznie (95%)", f"${p95:.2f}")
+
+                fig, ax = plt.subplots(figsize=(10, 4))
+                sns.histplot(results, kde=True, color="skyblue", bins=80, ax=ax)
+                ax.axvline(mean_res, color='red', linewidth=2, label=f'Fair Value: ${mean_res:.2f}')
+                ax.axvline(p5, color='orange', linestyle='--', label='5% Percentile')
+                ax.axvline(p95, color='green', linestyle='--', label='95% Percentile')
+                
+                if data['market_price']:
+                    ax.axvline(data['market_price'], color='black', linewidth=3, label=f'Market Price: ${data["market_price"]:.2f}')
+                
+                ax.set_title("Rozkład Prawdopodobieństwa Ceny Akcji")
+                ax.legend()
+                st.pyplot(fig)
